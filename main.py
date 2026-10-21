@@ -5,11 +5,14 @@ from dotenv import load_dotenv
 import os
 import traceback
 import uvicorn
+import asyncio
+import time
+import edge_tts
 
 from config import DEFAULT_CONFIGS
 from handle_text import preparar_texto_para_tts
 from tts_handler import gerar_audio, DADOS_MODELOS
-from utils import (obter_env_bool, TIPOS_MIME_AUDIO, 
+from utils import (obter_env_bool, TIPOS_MIME_AUDIO,
                    LOG_ERROS_DETALHADO, EXIGIR_CHAVE_API, CHAVE_API)
 
 # Inicializa a aplicação FastAPI e carrega as variáveis de ambiente.
@@ -23,6 +26,12 @@ FORMATO_RESPOSTA_PADRAO = os.getenv('DEFAULT_RESPONSE_FORMAT', DEFAULT_CONFIGS.g
 VELOCIDADE_PADRAO = float(os.getenv('DEFAULT_SPEED', DEFAULT_CONFIGS.get("DEFAULT_SPEED")))
 REMOVER_FILTRO = obter_env_bool('REMOVE_FILTER', DEFAULT_CONFIGS.get("REMOVE_FILTER"))
 
+# --- Cache do catálogo de vozes (1 hora) ---
+CACHE_VOZES_SEGUNDOS = 3600
+_cache_vozes = None
+_cache_vozes_expira = 0.0
+_cache_vozes_lock = asyncio.Lock()
+
 
 # --- Função de Segurança (Dependência) ---
 async def verificar_chave_api(request: Request):
@@ -34,11 +43,11 @@ async def verificar_chave_api(request: Request):
         return
     if not CHAVE_API:
         raise HTTPException(status_code=500, detail="Servidor não configurado para autenticação. A variável API_KEY não foi definida.")
-    
+
     auth_header = request.headers.get('Authorization')
     if not auth_header or not auth_header.startswith('Bearer '):
         raise HTTPException(status_code=401, detail="Chave de API ausente ou em formato inválido. Use o cabeçalho 'Authorization: Bearer SUA_CHAVE'.")
-    
+
     token_fornecido = auth_header.split('Bearer ')[1]
     if token_fornecido != CHAVE_API:
         raise HTTPException(status_code=401, detail="Chave de API inválida.")
@@ -69,10 +78,10 @@ async def text_to_speech(request: Request, background_tasks: BackgroundTasks):
 
         # Gera o áudio de forma assíncrona
         caminho_ficheiro_audio = await gerar_audio(texto, voz, formato_resposta, velocidade)
-        
+
         # Agenda a exclusão do ficheiro temporário após o envio da resposta
         background_tasks.add_task(os.unlink, caminho_ficheiro_audio)
-        
+
         return FileResponse(path=caminho_ficheiro_audio, media_type=tipo_mime, filename=f"speech.{formato_resposta}")
 
     except Exception as e:
@@ -85,22 +94,3 @@ async def text_to_speech(request: Request, background_tasks: BackgroundTasks):
 @app.get("/v1/models")
 def listar_modelos():
     """
-    Endpoint para listar os modelos de TTS disponíveis (para compatibilidade com OpenAI).
-    """
-    return {"data": [{"id": m["id"], "object": "model"} for m in DADOS_MODELOS]}
-
-
-# --- Bloco de Inicialização do Servidor ---
-if __name__ == '__main__':
-    print("=====================================================================")
-    print("      🔊 Iniciando o Multivozes BR Engine 🇧🇷 (Modo Estável)")
-    print("=====================================================================")
-    print(f"🐍 Criado por: Samuel de Sousa Santos (samucatutoriais)")
-    print(f"🔧 Baseado no projeto de: travisvn/openai-edge-tts")
-    print(f"⚙️  Servidor: Uvicorn (FastAPI)")
-    print(f"🌐 Servidor a correr em: http://0.0.0.0:{PORTA}")
-    print(f"🔑 Exigir chave de API: {'Sim' if EXIGIR_CHAVE_API else 'Não'}")
-    print("=====================================================================")
-    
-    uvicorn.run(app, host='0.0.0.0', port=PORTA)
-

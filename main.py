@@ -94,3 +94,70 @@ async def text_to_speech(request: Request, background_tasks: BackgroundTasks):
 @app.get("/v1/models")
 def listar_modelos():
     """
+    Endpoint para listar os modelos de TTS disponíveis (para compatibilidade com OpenAI).
+    """
+    return {"data": [{"id": m["id"], "object": "model"} for m in DADOS_MODELOS]}
+
+
+# --- Nova rota: catálogo completo das vozes do Edge TTS ---
+@app.get("/v1/voices")
+async def listar_vozes():
+    """
+    Lista vozes disponíveis no Edge TTS.
+    Endpoint público: retorna apenas metadados e não expõe credenciais.
+    Cache em memória de 1 hora para poupar chamadas ao serviço upstream.
+    """
+    global _cache_vozes, _cache_vozes_expira
+
+    agora = time.monotonic()
+    if _cache_vozes is not None and agora < _cache_vozes_expira:
+        return {"voices": _cache_vozes, "count": len(_cache_vozes), "cached": True}
+
+    async with _cache_vozes_lock:
+        agora = time.monotonic()
+        if _cache_vozes is not None and agora < _cache_vozes_expira:
+            return {"voices": _cache_vozes, "count": len(_cache_vozes), "cached": True}
+
+        try:
+            lista = await asyncio.wait_for(edge_tts.list_voices(), timeout=20)
+            vozes = [
+                {
+                    "id": voz["ShortName"],
+                    "name": voz.get("FriendlyName") or voz["ShortName"],
+                    "locale": voz.get("Locale"),
+                    "gender": voz.get("Gender"),
+                }
+                for voz in lista
+                if voz.get("ShortName")
+            ]
+            vozes.sort(key=lambda voz: ((voz["locale"] or ""), voz["name"]))
+            if not vozes:
+                raise RuntimeError("O catálogo retornou uma lista vazia")
+
+            _cache_vozes = vozes
+            _cache_vozes_expira = time.monotonic() + CACHE_VOZES_SEGUNDOS
+            return {"voices": vozes, "count": len(vozes), "cached": False}
+
+        except Exception as erro:
+            # Se o upstream falhar, reaproveita a última lista conhecida.
+            if _cache_vozes is not None:
+                print(f"Falha ao atualizar catálogo de vozes, usando cache: {type(erro).__name__}")
+                _cache_vozes_expira = time.monotonic() + 60
+                return {"voices": _cache_vozes, "count": len(_cache_vozes), "cached": True}
+            print(f"Falha ao obter catálogo de vozes: {type(erro).__name__}")
+            raise HTTPException(status_code=503, detail="Catálogo de vozes temporariamente indisponível")
+
+
+# --- Bloco de Inicialização do Servidor ---
+if __name__ == '__main__':
+    print("=====================================================================")
+    print("      🔊 Iniciando o Multivozes BR Engine 🇧🇷 (Modo Estável)")
+    print("=====================================================================")
+    print(f"🐍 Criado por: Samuel de Sousa Santos (samucatutoriais)")
+    print(f"🔧 Baseado no projeto de: travisvn/openai-edge-tts")
+    print(f"⚙️  Servidor: Uvicorn (FastAPI)")
+    print(f"🌐 Servidor a correr em: http://0.0.0.0:{PORTA}")
+    print(f"🔑 Exigir chave de API: {'Sim' if EXIGIR_CHAVE_API else 'Não'}")
+    print("=====================================================================")
+
+    uvicorn.run(app, host='0.0.0.0', port=PORTA)
